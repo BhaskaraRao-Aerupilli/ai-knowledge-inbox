@@ -1,8 +1,13 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { config } from '../config/index.js';
 import { logger } from '../utils/logger.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const SERVER_ROOT = path.resolve(__dirname, '../..');
 
 let dbInstance = null;
 
@@ -11,7 +16,7 @@ export function getDatabase(dbPath = config.DATABASE_PATH) {
     return dbInstance;
   }
 
-  const resolvedPath = path.resolve(process.cwd(), dbPath);
+  const resolvedPath = path.isAbsolute(dbPath) ? dbPath : path.resolve(SERVER_ROOT, dbPath);
   const dir = path.dirname(resolvedPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
