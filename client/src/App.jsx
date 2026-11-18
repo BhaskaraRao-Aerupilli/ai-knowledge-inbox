@@ -1,122 +1,109 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import React, { useState, useEffect } from 'react';
+import { useItems } from './hooks/useItems.js';
+import { NoteForm } from './components/NoteForm.jsx';
+import { UrlForm } from './components/UrlForm.jsx';
+import { ItemList } from './components/ItemList.jsx';
+import { QueryPanel } from './components/QueryPanel.jsx';
+import { checkHealth } from './services/api.js';
+import { Inbox, FileText, Globe } from 'lucide-react';
 
-function App() {
-  const [count, setCount] = useState(0)
+export function App() {
+  const { items, loading, isPolling, refresh, removeItem, addItem } = useItems();
+  const [activeTab, setActiveTab] = useState('note'); // 'note' | 'url'
+  const [serverInfo, setServerInfo] = useState(null);
+
+  useEffect(() => {
+    checkHealth()
+      .then((data) => setServerInfo(data))
+      .catch(() => setServerInfo({ status: 'offline' }));
+  }, []);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app-layout">
+      {/* Top Header */}
+      <header className="app-header">
+        <div className="header-container">
+          <div className="brand">
+            <div className="brand-icon">
+              <Inbox size={22} />
+            </div>
+            <div>
+              <h1 className="brand-title">AI Knowledge Inbox</h1>
+              <p className="brand-subtitle">Production-grade RAG with local embeddings & cited LLM synthesis</p>
+            </div>
+          </div>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
+          <div className="header-meta">
+            {serverInfo?.status === 'healthy' ? (
+              <div className="server-status online">
+                <span className="status-dot"></span>
+                <span>Groq + MiniLM (384-dim)</span>
+              </div>
+            ) : (
+              <div className="server-status connecting">
+                <span className="status-dot"></span>
+                <span>Connecting to backend...</span>
+              </div>
+            )}
+          </div>
         </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+      </header>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {/* Main Two-Pane Container */}
+      <main className="main-content">
+        <div className="two-pane-grid">
+          {/* Left Column: Ingestion & Knowledge Items */}
+          <section className="pane pane-left">
+            <div className="card ingest-card">
+              <div className="tab-nav">
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'note' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('note')}
+                >
+                  <FileText size={16} />
+                  <span>Add Note</span>
+                </button>
+                <button
+                  type="button"
+                  className={`tab-btn ${activeTab === 'url' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('url')}
+                >
+                  <Globe size={16} />
+                  <span>Add URL</span>
+                </button>
+              </div>
+
+              <div className="tab-content">
+                {activeTab === 'note' ? (
+                  <NoteForm onItemAdded={addItem} />
+                ) : (
+                  <UrlForm onItemAdded={addItem} />
+                )}
+              </div>
+            </div>
+
+            <div className="card items-card">
+              <ItemList
+                items={items}
+                loading={loading}
+                isPolling={isPolling}
+                onRefresh={refresh}
+                onDelete={removeItem}
+              />
+            </div>
+          </section>
+
+          {/* Right Column: Query & RAG Grounding */}
+          <section className="pane pane-right">
+            <div className="card query-card">
+              <QueryPanel />
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  );
 }
 
-export default App
+export default App;
