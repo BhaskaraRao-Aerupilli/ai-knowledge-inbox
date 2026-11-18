@@ -1,0 +1,17 @@
+{
+  "name": "ai-knowledge-inbox",
+  "version": "1.0.0",
+  "description": "Production-style RAG web app: AI Knowledge Inbox",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "server": "npm run start --prefix server",
+    "server:dev": "npm run dev --prefix server",
+    "client": "npm run dev --prefix client",
+    "test": "npm test --prefix server",
+    "seed": "node scripts/seed-demo.js"
+  }
+}
