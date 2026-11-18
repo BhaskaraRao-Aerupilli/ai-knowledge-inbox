@@ -1,40 +1,77 @@
 # AI Knowledge Inbox
 
-> A production-style, single-user Retrieval-Augmented Generation (RAG) web application with local embeddings, defensive citation grounding, and async ingestion.
+> A production-style, single-user Retrieval-Augmented Generation (RAG) web application with local embeddings, defensive citation grounding, and asynchronous ingestion.
 
-[![Vitest](https://img.shields.io/badge/tests-52%20passing-brightgreen)](server/tests)
-[![Node](https://img.shields.io/badge/node-v24.19+-blue)](https://nodejs.org/)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-v24.19+-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Vitest](https://img.shields.io/badge/Tests-52%20Passing-brightgreen?logo=vitest&logoColor=white)](server/tests)
+[![SQLite](https://img.shields.io/badge/SQLite-WAL%20Mode-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Groq](https://img.shields.io/badge/LLM-Groq%20Cloud-F55036)](https://groq.com/)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ---
 
-## Architecture Overview
+## Table of Contents
+- [Overview](#overview)
+- [Architecture Diagram](#architecture-diagram)
+- [End-to-End RAG Sequence](#end-to-end-rag-sequence)
+- [Key Features](#key-features)
+- [Technology Stack](#technology-stack)
+- [Database Schema](#database-schema)
+- [Configuration & Environment Variables](#configuration--environment-variables)
+- [Getting Started](#getting-started)
+- [API Reference (with cURL examples)](#api-reference)
+- [Automated Testing](#automated-testing)
+- [Production Tradeoffs & Evolution](#production-tradeoffs--evolution)
+
+---
+
+## Overview
+
+**AI Knowledge Inbox** allows a user to save notes and web pages into a searchable repository, automatically generating semantic embeddings and performing grounded, cited question answering using a Large Language Model.
+
+The application follows production-grade backend design patterns:
+- **Async Ingestion**: Non-blocking `202 Accepted` response pattern with automated background workers and client-side status polling.
+- **SSRF Hardening**: Multi-layer URL validation with DNS resolution checks rejecting loopback, link-local, cloud metadata, and private IP ranges across all redirects.
+- **Deterministic Chunking**: Sentence-boundary-aware chunker calibrated for MiniLM's 256-token truncation threshold.
+- **Local Embeddings**: In-memory singleton ONNX inference via `@huggingface/transformers` (`all-MiniLM-L6-v2`) producing normalized 384-dimensional dense vectors with zero external API latency or costs.
+- **Prompt Injection Defense & Citation Mapping**: Strict context delimiting, untrusted-data instructions, and defensive citation validation that drops fabricated labels before returning responses.
+
+---
+
+## Architecture Diagram
 
 ```mermaid
 flowchart TD
-    subgraph Client ["Client (React + Vite)"]
-        UI["User Interface (Note / URL Forms, Item List, Query Panel)"]
-        Hook["useItems Hook (Polling & State)"]
-        API["Axios API Client"]
+    subgraph Client ["Frontend (React 19 + Vite)"]
+        UI["Web Interface (Note / URL Forms, Knowledge List, Query Panel)"]
+        Hook["useItems Hook (State & Auto-Polling)"]
+        API["Axios API Client (Base URL Proxy)"]
     end
 
-    subgraph Server ["Server (Express + Node ESM)"]
+    subgraph Server ["Backend (Express + Node ESM)"]
         Router["Express Router (/ingest, /items, /query, /health)"]
-        Limiter["Rate Limiter & CORS"]
-        IngestCtrl["Ingestion Controller"]
-        QueryCtrl["Query Controller"]
+        Limiter["Rate Limiting & Strict CORS"]
+        ErrorHandler["Central AppError Handler"]
         
-        subgraph Services ["Core Services"]
-            ExtractSvc["Extraction & SSRF Guard (Cheerio + DNS Lookup)"]
-            ChunkSvc["Chunker (~200 tokens, ~40 overlap)"]
-            EmbedSvc["Embedding Singleton (all-MiniLM-L6-v2 via Transformers.js)"]
-            RetrieveSvc["Retrieval Service (Safe Cosine Similarity)"]
-            LlmSvc["Groq LLM Client (llama-3.3-70b-versatile)"]
+        subgraph Controllers ["Controllers"]
+            IngestCtrl["Ingestion Controller"]
+            ItemCtrl["Item Controller"]
+            QueryCtrl["Query Controller"]
         end
 
-        subgraph Storage ["Database (SQLite with WAL & Foreign Keys)"]
-            ItemsTable[("items Table")]
-            ChunksTable[("chunks Table (JSON Vectors)")]
+        subgraph Services ["Core Services"]
+            ExtractSvc["Extraction & SSRF Guard (Cheerio + DNS Lookup)"]
+            ChunkSvc["Sentence Chunker (~200 tokens, ~40 overlap)"]
+            EmbedSvc["Embedding Singleton (all-MiniLM-L6-v2 ONNX)"]
+            RetrieveSvc["Retrieval Service (Safe Cosine Similarity)"]
+            LlmSvc["Groq LLM Client (qwen/qwen3.8-27b / llama-3.3-70b)"]
+            QuerySvc["Query Orchestrator (Defensive Citation Validator)"]
+        end
+
+        subgraph Storage ["Embedded Database"]
+            DB[("SQLite (WAL Mode + Foreign Keys ON)")]
+            ItemsTable["items Table (Metadata, SHA-256 Hash, Status)"]
+            ChunksTable["chunks Table (JSON Float Arrays, Index on item_id)"]
         end
     end
 
@@ -42,19 +79,20 @@ flowchart TD
     API --> Router
     Router --> Limiter
     Limiter --> IngestCtrl
+    Limiter --> ItemCtrl
     Limiter --> QueryCtrl
 
     IngestCtrl --> ExtractSvc
     ExtractSvc --> ChunkSvc
     ChunkSvc --> EmbedSvc
-    EmbedSvc --> ItemsTable
-    EmbedSvc --> ChunksTable
+    EmbedSvc --> Storage
 
-    QueryCtrl --> EmbedSvc
-    QueryCtrl --> RetrieveSvc
-    RetrieveSvc --> ChunksTable
-    RetrieveSvc --> LlmSvc
-    LlmSvc --> GroqAPI["Groq Cloud API"]
+    QueryCtrl --> QuerySvc
+    QuerySvc --> EmbedSvc
+    QuerySvc --> RetrieveSvc
+    RetrieveSvc --> Storage
+    QuerySvc --> LlmSvc
+    LlmSvc --> GroqCloud["Groq Cloud API"]
 ```
 
 ---
@@ -66,75 +104,104 @@ sequenceDiagram
     autonumber
     actor User
     participant Frontend as React Client
-    participant API as Express Server
+    participant Server as Express Server
     participant Embed as Local Embedder (MiniLM)
     participant DB as SQLite DB
-    participant Groq as Groq LLM
+    participant Groq as Groq LLM API
 
-    Note over User,DB: Ingestion Flow (Asynchronous 202)
-    User->>Frontend: Submits Note or Web URL
-    Frontend->>API: POST /ingest
-    API->>DB: Save Item (status: pending)
-    API-->>Frontend: 202 Accepted (Item ID)
-    Frontend->>Frontend: Begin polling GET /items
+    Note over User,DB: Phase 1: Asynchronous Ingestion (HTTP 202)
+    User->>Frontend: Submits note or web URL
+    Frontend->>Server: POST /ingest
+    Server->>DB: Save record (processing_status: 'pending')
+    Server-->>Frontend: 202 Accepted { id, status: 'pending' }
+    Frontend->>Frontend: Activate polling (GET /items every 2s)
 
     critical Background Ingestion Worker
-        API->>API: SSRF Validation & HTML Extraction (Cheerio)
-        API->>API: Compute SHA-256 Content Hash (Dedup)
-        API->>API: Sentence-Aware Chunking (~200 tokens)
-        API->>Embed: Generate 384-dim Embeddings
-        Embed-->>API: Normalized Float Arrays
-        API->>DB: Atomic Transaction: Store Chunks & Mark 'completed'
+        Server->>Server: Validate SSRF (DNS lookup & IP ranges)
+        Server->>Server: Fetch & extract clean text (Cheerio)
+        Server->>Server: Compute SHA-256 Content Hash
+        alt Identical content exists in DB
+            Server->>DB: Clone existing chunk embeddings (Zero compute)
+        else New content
+            Server->>Server: Sentence-aware chunking (~200 tokens, ~40 overlap)
+            Server->>Embed: Embed text chunks
+            Embed-->>Server: 384-dimensional normalized vectors
+            Server->>DB: Transaction: Save chunks & mark 'completed'
+        end
     end
 
-    Frontend->>API: GET /items (Poll)
-    API-->>Frontend: Item status: "completed" (Stop polling)
+    Frontend->>Server: GET /items (Poll)
+    Server-->>Frontend: Returns item (status: 'completed', chunk_count: N)
+    Frontend->>Frontend: Stop polling; render 'Ready' badge
 
-    Note over User,Groq: Query & Grounding Flow
-    User->>Frontend: Enters Question
-    Frontend->>API: POST /query
-    API->>Embed: Embed Question (384 dimensions)
-    Embed-->>API: Query Vector
-    API->>DB: Load Stored Chunks
-    API->>API: Compute Cosine Similarity & Rank (Top-K=5, Threshold=0.30)
+    Note over User,Groq: Phase 2: Grounded Query & Synthesis
+    User->>Frontend: Submits question
+    Frontend->>Server: POST /query { question }
+    Server->>Embed: Embed question text
+    Embed-->>Server: Query vector
+    Server->>DB: Fetch all chunks with item metadata
+    Server->>Server: Calculate Cosine Similarity & Rank
 
-    alt No chunks pass threshold
-        API-->>Frontend: 200 OK: "Insufficient context in knowledge base" (LLM call skipped)
+    alt No chunks pass threshold (e.g. < 0.25)
+        Server-->>Frontend: 200 OK: "Insufficient context in knowledge base" (LLM call skipped)
     else Chunks pass threshold
-        API->>Groq: Prompt with Delimited Context + System Prompt
-        Groq-->>API: JSON: {"answer": "...", "sources": ["S1"]}
-        API->>API: Validate & Map Citations defensively (drop unknown labels)
-        API-->>Frontend: 200 OK: Answer + Structured Source Cards
+        Server->>Server: Label top chunks [S1]..[Sn] & wrap in delimiters
+        Server->>Groq: Chat completion (System prompt + delimited untrusted context)
+        Groq-->>Server: JSON: {"answer": "...", "sources": ["S1"]}
+        Server->>Server: Validate citations (Drop unknown/invented labels)
+        Server-->>Frontend: 200 OK: { answer, sources: [{ title, url, snippet, similarity, label }] }
     end
-    Frontend->>User: Renders Markdown Answer + Source Cards
+    Frontend->>User: Displays answer in Markdown with interactive source cards
 ```
 
 ---
 
 ## Key Features
 
-1. **Async Ingestion with Real-Time Polling**:
-   - `POST /ingest` responds with `202 Accepted` immediately. Background worker performs fetching, sanitization, chunking, and embedding.
-   - Client polls `GET /items` automatically while items are in `pending` or `processing` states, stopping automatically when all items are terminal.
-   - Server startup recovery resets stuck `processing` items to `failed` with descriptive error messages.
-2. **Deterministic, Sentence-Aware Chunking**:
+1. **Robust Async Ingestion Pipeline**:
+   - `POST /ingest` returns immediately with `202 Accepted`.
+   - Dedicated in-process worker handles fetching, extraction, chunking, and embedding.
+   - Client polls `GET /items` every 2 seconds while items are `pending` or `processing`, stopping automatically when terminal.
+   - Server startup recovery: any item interrupted in `processing` state during a server restart is automatically flagged as `failed` with a descriptive message.
+
+2. **Hardened SSRF Protection**:
+   - Strictly enforces `http:` and `https:` schemes.
+   - Performs asynchronous DNS resolution using `dns.promises.lookup` to filter out private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), loopback (`127.0.0.0/8`, `::1`), link-local/cloud metadata (`169.254.169.254`), and CGNAT (`100.64.0.0/10`).
+   - Re-checks DNS on every redirect jump (capped at 5 redirects).
+   - Enforces a 10-second timeout and 5MB streaming response cap.
+
+3. **Deterministic, Sentence-Aware Chunking**:
    - Sized to ~200 tokens with ~40 token overlap using a calibrated `words * 1.3` token heuristic.
    - Respects MiniLM's 256-token hard cut-off to prevent silent truncation.
-3. **Local Embedding Singleton**:
+
+4. **Local Embedding Singleton**:
    - Runs `all-MiniLM-L6-v2` locally via `@huggingface/transformers` using the native ONNX runtime.
    - Yields 384-dimensional L2-normalized float arrays with zero external API fees or network latency.
-4. **Hardened SSRF Protection for Web Ingestion**:
-   - Only `http:` and `https:` schemes allowed.
-   - DNS resolution filters out loopback (`127.0.0.0/8`, `::1`), private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local/cloud metadata (`169.254.169.254`), and CGNAT ranges.
-   - Re-checks DNS resolution on every redirect jump (max 5 redirects).
-   - 10-second request timeout and 5MB streaming size cap.
-5. **Prompt Injection Defense & Defensive Citation Mapping**:
-   - Delimits context within explicit `<<<CONTEXT_SOURCE label="S1">>>` boundaries.
-   - Strict system prompt instructs the model to disregard instructions contained within context data.
-   - Groq output is parsed defensively: any citation label not in the retrieved set (e.g. `S99`) is safely discarded.
-6. **Optimized SQLite Storage**:
-   - Write-Ahead Logging (`WAL` mode) ensures non-blocking concurrent reads during ingestion writes.
-   - Foreign key cascading ensures that deleting an item deletes all associated vector chunks atomically.
+
+5. **Defensive Prompt Injection & Citation Verification**:
+   - Wraps context inside `<<<CONTEXT_SOURCE label="S1">>>` tags.
+   - Instructs the LLM that context is untrusted reference data.
+   - Rejects hallucinated citations: any label returned by the LLM that was not in the retrieved set (e.g., `S99`) is safely dropped.
+
+6. **SQLite Storage with WAL Mode**:
+   - `PRAGMA journal_mode = WAL` allows readers to access the database concurrently with background ingestion writes without blocking.
+   - `PRAGMA foreign_keys = ON` ensures cascading deletion of vector chunks when an item is deleted.
+
+---
+
+## Technology Stack
+
+| Layer | Technologies |
+| :--- | :--- |
+| **Backend Runtime** | Node.js (ESM), Express |
+| **Database** | SQLite via `better-sqlite3` (WAL mode enabled) |
+| **Embeddings** | `@huggingface/transformers` (`all-MiniLM-L6-v2`, 384-dim ONNX) |
+| **LLM Provider** | Groq Cloud SDK (`groq-sdk`) |
+| **Validation & Security** | Zod (startup config & request schemas), `express-rate-limit`, CORS |
+| **Logging** | Pino + `pino-http`, `pino-pretty` (with secret redaction) |
+| **HTML Extraction** | Cheerio |
+| **Frontend** | React 19, Vite, Axios, `react-markdown`, `lucide-react` |
+| **Testing** | Vitest, Supertest (52 automated tests) |
 
 ---
 
@@ -173,20 +240,22 @@ CREATE INDEX idx_items_content_hash ON items(content_hash);
 
 ---
 
-## Environment Variables
+## Configuration & Environment Variables
+
+Create a `.env` file in `server/` (or the repository root) based on `.env.example`:
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `PORT` | Number | `3001` | HTTP server port |
-| `NODE_ENV` | String | `development` | Environment (`development`, `production`, `test`) |
+| `NODE_ENV` | String | `development` | Environment mode (`development`, `production`, `test`) |
 | `CLIENT_ORIGIN` | String | `http://localhost:5173` | Allowed CORS origin |
-| `DATABASE_PATH` | String | `./data/knowledge.db` | Path to SQLite database file |
+| `DATABASE_PATH` | String | `./data/knowledge.db` | Relative or absolute path to SQLite file |
 | `GROQ_API_KEY` | String | *Required* | Groq API Key (validated on startup) |
-| `GROQ_MODEL` | String | `llama-3.3-70b-versatile` | Groq chat model identifier |
-| `CHUNK_SIZE` | Number | `200` | Target tokens per chunk |
+| `GROQ_MODEL` | String | `qwen/qwen3.8-27b` | Model ID (e.g. `qwen/qwen3.8-27b`, `llama-3.3-70b-versatile`) |
+| `CHUNK_SIZE` | Number | `200` | Target token budget per chunk |
 | `CHUNK_OVERLAP` | Number | `40` | Overlap tokens between adjacent chunks |
 | `TOP_K` | Number | `5` | Maximum number of chunks retrieved |
-| `SIMILARITY_THRESHOLD` | Number | `0.30` | Minimum cosine similarity score threshold |
+| `SIMILARITY_THRESHOLD` | Number | `0.25` | Minimum cosine similarity score threshold |
 | `RATE_LIMIT_WINDOW_MS` | Number | `60000` | Rate limiter window in milliseconds (1 min) |
 | `RATE_LIMIT_MAX_REQUESTS` | Number | `60` | Maximum requests per IP per window |
 
@@ -195,13 +264,14 @@ CREATE INDEX idx_items_content_hash ON items(content_hash);
 ## Getting Started
 
 ### Prerequisites
-- Node.js `v20.0.0+` (tested on `v24.19.0`)
+- Node.js `v20.0.0+` (tested and verified on `v24.19.0`)
 - npm `v10+`
 - A valid Groq API Key ([https://console.groq.com/keys](https://console.groq.com/keys))
 
 ### Installation
 1. Clone the repository and enter the directory:
    ```bash
+   git clone https://github.com/BhaskaraRao-Aerupilli/ai-knowledge-inbox.git
    cd ai-knowledge-inbox
    ```
 2. Install dependencies:
@@ -209,17 +279,19 @@ CREATE INDEX idx_items_content_hash ON items(content_hash);
    npm install --prefix server
    npm install --prefix client
    ```
-3. Set up environment variables:
+3. Configure environment variables:
    ```bash
    cp .env.example server/.env
    ```
-   Open `server/.env` and insert your `GROQ_API_KEY`:
+   Add your `GROQ_API_KEY` in `server/.env`:
    ```ini
-   GROQ_API_KEY=gsk_your_actual_groq_key_here
+   GROQ_API_KEY=gsk_your_groq_api_key_here
+   GROQ_MODEL=qwen/qwen3.8-27b
+   SIMILARITY_THRESHOLD=0.25
    ```
 
 ### Running the Application
-To run the full stack in development mode:
+Run the backend and frontend in separate terminals:
 
 **Terminal 1 (Backend Server):**
 ```bash
@@ -234,129 +306,157 @@ npm run client
 ```
 
 ### Seeding Demo Data
-To populate the knowledge base with realistic technical notes through the real embedding pipeline:
+To populate the knowledge base with real technical notes using the real embedding pipeline:
 ```bash
 npm run seed
 ```
 
 ---
 
-## API Documentation & Examples (curl)
+## API Reference
+
+All responses follow a consistent envelope: `{ success: true, data: ... }` or `{ success: false, error: { code, message } }`.
 
 ### 1. Ingest a Plain Text Note
-```bash
-curl -X POST http://localhost:3001/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "note",
-    "title": "SQLite WAL Mode",
-    "content": "SQLite supports Write-Ahead Logging (WAL) mode to drastically improve concurrency..."
-  }'
-```
-**Response (`202 Accepted`):**
-```json
-{
-  "success": true,
-  "data": {
-    "id": "7d6377d9-9ba8-4b8a-8f3e-1ce3327c0a8f",
-    "title": "SQLite WAL Mode",
-    "source_type": "note",
-    "processing_status": "pending",
-    "created_at": "2026-11-18T19:44:15.123Z"
+- **Endpoint**: `POST /ingest`
+- **Request**:
+  ```bash
+  curl -X POST http://localhost:3001/ingest \
+    -H "Content-Type: application/json" \
+    -d '{
+      "source_type": "note",
+      "title": "SQLite WAL Mode",
+      "content": "SQLite supports Write-Ahead Logging (WAL) to enable concurrent reads and writes..."
+    }'
+  ```
+- **Response (`202 Accepted`)**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "id": "ebd9fc4b-ed2a-4cde-89e3-f09a2c668440",
+      "title": "SQLite WAL Mode",
+      "source_type": "note",
+      "processing_status": "pending",
+      "created_at": "2026-11-18T14:20:36.833Z"
+    }
   }
-}
-```
+  ```
 
-### 2. Ingest a Web URL (with SSRF protection)
-```bash
-curl -X POST http://localhost:3001/ingest \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_type": "url",
-    "url": "https://example.com/article",
-    "title": "Example Article"
-  }'
-```
+### 2. Ingest a Web URL
+- **Endpoint**: `POST /ingest`
+- **Request**:
+  ```bash
+  curl -X POST http://localhost:3001/ingest \
+    -H "Content-Type: application/json" \
+    -d '{
+      "source_type": "url",
+      "url": "https://en.wikipedia.org/wiki/Cosine_similarity",
+      "title": "Wikipedia: Cosine Similarity"
+    }'
+  ```
 
 ### 3. List Knowledge Items
-```bash
-curl -X GET "http://localhost:3001/items?limit=10&offset=0"
-```
-**Response (`200 OK`):**
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": "7d6377d9-9ba8-4b8a-8f3e-1ce3327c0a8f",
-      "title": "SQLite WAL Mode",
-      "preview": "SQLite supports Write-Ahead Logging (WAL) mode to drastically improve concurrency...",
-      "source_type": "note",
-      "processing_status": "completed",
-      "chunk_count": 1,
-      "created_at": "2026-11-18T19:44:15.123Z"
+- **Endpoint**: `GET /items?limit=10&offset=0`
+- **Response (`200 OK`)**:
+  ```json
+  {
+    "success": true,
+    "data": [
+      {
+        "id": "ebd9fc4b-ed2a-4cde-89e3-f09a2c668440",
+        "title": "SQLite WAL Mode",
+        "preview": "SQLite supports Write-Ahead Logging (WAL) to enable concurrent reads and writes...",
+        "source_type": "note",
+        "processing_status": "completed",
+        "chunk_count": 1,
+        "created_at": "2026-11-18T14:20:36.833Z"
+      }
+    ],
+    "meta": {
+      "limit": 10,
+      "offset": 0,
+      "count": 1,
+      "hasMore": false
     }
-  ],
-  "meta": {
-    "limit": 10,
-    "offset": 0,
-    "count": 1,
-    "hasMore": false
   }
-}
-```
+  ```
 
 ### 4. Query the Knowledge Base (RAG)
-```bash
-curl -X POST http://localhost:3001/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "question": "How does SQLite WAL mode improve concurrency?"
-  }'
-```
-**Response (`200 OK`):**
-```json
-{
-  "success": true,
-  "data": {
-    "answer": "SQLite WAL mode improves concurrency by writing changes to a separate `-wal` file instead of directly locking the main database file. This allows readers to continue reading from the main database concurrently without waiting on writers.",
-    "sources": [
-      {
-        "id": "7d6377d9-9ba8-4b8a-8f3e-1ce3327c0a8f",
-        "title": "SQLite WAL Mode",
-        "label": "S1",
-        "similarity": 0.8241,
-        "snippet": "With WAL mode enabled via PRAGMA journal_mode = WAL, readers read from the main database file while writers append changes to a separate -wal file..."
-      }
-    ]
+- **Endpoint**: `POST /query`
+- **Request**:
+  ```bash
+  curl -X POST http://localhost:3001/query \
+    -H "Content-Type: application/json" \
+    -d '{
+      "question": "How does SQLite WAL mode improve concurrency?"
+    }'
+  ```
+- **Response (`200 OK`)**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "answer": "SQLite WAL mode improves concurrency by allowing readers to read from the main database file while writers append changes to a separate -wal file, preventing writers from blocking readers.",
+      "sources": [
+        {
+          "id": "ebd9fc4b-ed2a-4cde-89e3-f09a2c668440",
+          "title": "SQLite WAL Mode and Concurrency",
+          "label": "S1",
+          "similarity": 0.6945,
+          "snippet": "SQLite supports Write-Ahead Logging (WAL) to enable concurrent reads and writes. Under traditional rollback journal mode, writing locks the entire database file against concurrent readers..."
+        }
+      ]
+    }
   }
-}
-```
+  ```
+
+### 5. Health Check
+- **Endpoint**: `GET /health`
+- **Response (`200 OK`)**:
+  ```json
+  {
+    "success": true,
+    "data": {
+      "status": "healthy",
+      "timestamp": "2026-11-18T14:30:00.000Z",
+      "models": {
+        "llm": "qwen/qwen3.8-27b",
+        "embeddings": "Xenova/all-MiniLM-L6-v2"
+      }
+    }
+  }
+  ```
 
 ---
 
-## Running the Automated Test Suite
+## Automated Testing
 
-The test suite is powered by **Vitest** and **Supertest**, featuring unit and integration tests across all layers.
+The automated test suite runs via **Vitest** and **Supertest**:
 
-To run all tests:
 ```bash
 cd server
 npm test
 ```
 
-### Test Coverage Highlights
-- **Chunking**: Sentence boundary detection, token budgeting, overlap verification, empty/whitespace edge cases.
-- **SSRF & URL Extraction**: Private IP filtering (IPv4/IPv6/metadata), protocol restrictions, Cheerio HTML stripping.
-- **Embeddings**: Real 384-dimensional vector validation with `all-MiniLM-L6-v2`, L2 normalization check, safe cosine calculations (guards against division-by-zero and dimension mismatch).
-- **Ingestion Pipeline**: Asynchronous status transitions, deduplication through content hashing, failure recovery.
-- **Retrieval & Citations**: Threshold filtering, ranking, short-circuiting on insufficient context without calling Groq, defensive dropped citation labels, 502 upstream failure handling.
-- **HTTP Endpoints**: Validation envelopes, status codes (`200`, `202`, `400`, `422`, `502`).
+### Verified Test Suites (52 Tests Passing)
+- **`tests/chunking.test.js`**: Sentence boundary splitting, token budget enforcement, chunk overlap verification, empty input handling.
+- **`tests/db.test.js`**: Schema initialization, WAL pragma, cascading chunk deletion on item delete, stuck item recovery on startup.
+- **`tests/embedding.test.js`**: Cosine similarity math, non-finite guard rails, malformed vector parsing, and real 384-dimensional embedding validation.
+- **`tests/extraction.test.js`**: SSRF private IP validation, loopback blocking, HTML boilerplate stripping via Cheerio, and SHA-256 deduplication hashing.
+- **`tests/ingestion.test.js`**: Asynchronous status transitions, deduplication chunk reuse, and graceful failure handling.
+- **`tests/query.test.js`**: Similarity ranking, threshold filtering, short-circuiting on low context, and defensive citation mapping.
+- **`tests/api.test.js`**: HTTP status codes (`200`, `202`, `400`, `404`, `502`), error envelopes, and input validation.
 
 ---
 
-## Limitations & Future Work
+## Production Tradeoffs & Evolution
 
-- **Full Vector Scans**: SQLite JSON vectors are evaluated via in-memory brute force scan. For collections larger than 50,000 chunks, migrate to PostgreSQL with `pgvector` or a dedicated vector engine (Qdrant).
-- **In-Process Queue**: Background ingestion uses `setImmediate`. In a multi-instance production environment, replace with a persistent queue (e.g. BullMQ on Redis).
-- **Single-User Scope**: Currently has no authentication or tenant separation. Production evolution requires JWT-based auth and tenant-keyed database isolation.
+For a detailed analysis of architectural choices, scalability limits, and production evolution, see [**`DECISIONS.md`**](./DECISIONS.md).
+
+- **Current Architecture**: SQLite + JSON float vectors + brute-force cosine search. Optimal for single-user workspaces up to ~50,000 chunks with zero infrastructure overhead.
+- **Production Evolution**:
+  1. **PostgreSQL + pgvector**: Replace SQLite JSON vectors with HNSW indexes for $O(\log N)$ approximate nearest neighbor search.
+  2. **Distributed Queue (BullMQ / Redis)**: Decouple background ingestion from the web process for horizontal worker scaling and retry backoff.
+  3. **Multi-Tenancy & Auth**: Add JWT-based authentication with row-level security (RLS) for tenant document isolation.
+  4. **Semantic Caching**: Add Redis caching for repeated questions and embedding vectors.
