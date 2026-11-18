@@ -1,6 +1,7 @@
 {
   "name": "ai-knowledge-inbox",
   "version": "1.0.0",
+  "type": "module",
   "description": "Production-style RAG web app: AI Knowledge Inbox",
   "private": true,
   "workspaces": [

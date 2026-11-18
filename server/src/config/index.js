@@ -36,8 +36,8 @@ if (!parsed.success) {
   process.exit(1);
 }
 
-// Fail fast if GROQ_API_KEY is missing outside test environment
-if (parsed.data.NODE_ENV !== 'test' && !parsed.data.GROQ_API_KEY) {
+// Fail fast if GROQ_API_KEY is missing outside test/seed environment
+if (parsed.data.NODE_ENV !== 'test' && !process.env.SKIP_GROQ_CHECK && !parsed.data.GROQ_API_KEY) {
   console.error('❌ Configuration Error: GROQ_API_KEY environment variable is missing.');
   console.error('Please set GROQ_API_KEY in your .env file or environment before starting the server.');
   process.exit(1);
