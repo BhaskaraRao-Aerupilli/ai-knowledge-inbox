@@ -34,14 +34,14 @@ export function UrlForm({ onItemAdded }) {
 
       <div className="form-group">
         <label htmlFor="url-title" className="form-label">
-          Title <span className="label-sub">(optional fallback)</span>
+          Title <span className="label-sub">(optional)</span>
         </label>
         <input
           id="url-title"
           type="text"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
-          placeholder="e.g. Official Documentation"
+          placeholder="e.g. Documentation"
           className="form-input"
           disabled={submitting}
         />
@@ -49,7 +49,7 @@ export function UrlForm({ onItemAdded }) {
 
       <div className="form-group">
         <label htmlFor="url-input" className="form-label">
-          Web Page URL <span className="label-required">*</span>
+          URL <span className="label-required">*</span>
         </label>
         <input
           id="url-input"
@@ -61,7 +61,6 @@ export function UrlForm({ onItemAdded }) {
           className="form-input"
           disabled={submitting}
         />
-        <p className="form-hint">Fetched securely server-side with strict SSRF protection.</p>
       </div>
 
       <div className="form-actions">
@@ -72,13 +71,13 @@ export function UrlForm({ onItemAdded }) {
         >
           {submitting ? (
             <>
-              <Loader2 size={16} className="icon-spin" />
-              <span>Fetching & Ingesting...</span>
+              <Loader2 size={15} className="icon-spin" />
+              <span>Fetching...</span>
             </>
           ) : (
             <>
-              <Globe size={16} />
-              <span>Ingest URL</span>
+              <Globe size={15} />
+              <span>Add URL</span>
             </>
           )}
         </button>

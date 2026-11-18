@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { askQuestion } from '../services/api.js';
 import { AnswerView } from './AnswerView.jsx';
 import { ErrorMessage } from './ErrorMessage.jsx';
-import { Search, Loader2, HelpCircle } from 'lucide-react';
+import { Search, Loader2 } from 'lucide-react';
 
 const SUGGESTIONS = [
   'How does SQLite WAL mode improve concurrency?',
-  'Why is 384 dimensions used for MiniLM embeddings?',
-  'How does the system defend against prompt injection?',
+  'What are the tradeoffs of HNSW compared to IVFFlat?',
+  'How does prompt injection protection work?',
 ];
 
 export function QueryPanel() {
@@ -49,11 +49,10 @@ export function QueryPanel() {
     <div className="query-panel">
       <div className="query-panel-header">
         <div className="query-title-wrapper">
-          <HelpCircle size={20} className="text-accent" />
           <div>
-            <h3>Ask Knowledge Base</h3>
+            <h3>Ask a Question</h3>
             <p className="query-subtitle">
-              Retrieves top semantic chunks via MiniLM embeddings and answers via Groq LLM.
+              Search your saved notes and web documents with cited sources.
             </p>
           </div>
         </div>
@@ -65,7 +64,7 @@ export function QueryPanel() {
             type="text"
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
-            placeholder="Ask a question about your saved notes or pages..."
+            placeholder="Type a question..."
             disabled={loading}
             className="query-input"
             required
@@ -77,13 +76,13 @@ export function QueryPanel() {
           >
             {loading ? (
               <>
-                <Loader2 size={16} className="icon-spin" />
+                <Loader2 size={15} className="icon-spin" />
                 <span>Searching...</span>
               </>
             ) : (
               <>
-                <Search size={16} />
-                <span>Query</span>
+                <Search size={15} />
+                <span>Search</span>
               </>
             )}
           </button>
@@ -91,7 +90,7 @@ export function QueryPanel() {
       </form>
 
       <div className="query-suggestions">
-        <span className="suggestions-label">Try:</span>
+        <span className="suggestions-label">Suggestions:</span>
         <div className="suggestions-list">
           {SUGGESTIONS.map((s, i) => (
             <button
@@ -111,8 +110,8 @@ export function QueryPanel() {
 
       {loading && !result && (
         <div className="query-searching-box">
-          <Loader2 size={24} className="icon-spin text-accent" />
-          <p>Scanning 384-dimensional vectors and synthesizing answer...</p>
+          <Loader2 size={20} className="icon-spin text-accent" />
+          <p>Searching your documents...</p>
         </div>
       )}
 
