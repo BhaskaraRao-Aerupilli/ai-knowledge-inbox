@@ -69,9 +69,9 @@ flowchart TD
         end
 
         subgraph Storage ["Embedded Database"]
-            DB[("SQLite (WAL Mode + Foreign Keys ON)")]
+            DB[("SQLite Database")]
             ItemsTable["items Table (Metadata, SHA-256 Hash, Status)"]
-            ChunksTable["chunks Table (JSON Float Arrays, Index on item_id)"]
+            ChunksTable["chunks Table (JSON Float Arrays)"]
         end
     end
 
@@ -108,50 +108,44 @@ sequenceDiagram
     participant Embed as Local Embedder (MiniLM)
     participant DB as SQLite DB
     participant Groq as Groq LLM API
-
     Note over User,DB: Phase 1: Asynchronous Ingestion (HTTP 202)
     User->>Frontend: Submits note or web URL
     Frontend->>Server: POST /ingest
-    Server->>DB: Save record (processing_status: 'pending')
-    Server-->>Frontend: 202 Accepted { id, status: 'pending' }
-    Frontend->>Frontend: Activate polling (GET /items every 2s)
-
-    critical Background Ingestion Worker
-        Server->>Server: Validate SSRF (DNS lookup & IP ranges)
-        Server->>Server: Fetch & extract clean text (Cheerio)
-        Server->>Server: Compute SHA-256 Content Hash
-        alt Identical content exists in DB
-            Server->>DB: Clone existing chunk embeddings (Zero compute)
-        else New content
-            Server->>Server: Sentence-aware chunking (~200 tokens, ~40 overlap)
-            Server->>Embed: Embed text chunks
-            Embed-->>Server: 384-dimensional normalized vectors
-            Server->>DB: Transaction: Save chunks & mark 'completed'
-        end
+    Server->>DB: Save record (status: pending)
+    Server-->>Frontend: 202 Accepted (item ID)
+    Frontend->>Frontend: Poll GET /items every 2s
+    Note over Server,DB: Background Ingestion Worker
+    Server->>Server: Validate SSRF (DNS lookup and IP ranges)
+    Server->>Server: Fetch and extract clean text (Cheerio)
+    Server->>Server: Compute SHA-256 Content Hash
+    alt Identical content exists in DB
+        Server->>DB: Clone existing chunk embeddings
+    else New content
+        Server->>Server: Sentence-aware chunking (~200 tokens)
+        Server->>Embed: Embed text chunks
+        Embed-->>Server: 384-dimensional normalized vectors
+        Server->>DB: Transaction: Save chunks and mark completed
     end
-
     Frontend->>Server: GET /items (Poll)
-    Server-->>Frontend: Returns item (status: 'completed', chunk_count: N)
-    Frontend->>Frontend: Stop polling; render 'Ready' badge
-
-    Note over User,Groq: Phase 2: Grounded Query & Synthesis
+    Server-->>Frontend: Return item (status: completed)
+    Frontend->>Frontend: Stop polling and render Ready badge
+    Note over User,Groq: Phase 2: Grounded Query and Synthesis
     User->>Frontend: Submits question
-    Frontend->>Server: POST /query { question }
+    Frontend->>Server: POST /query (question)
     Server->>Embed: Embed question text
-    Embed-->>Server: Query vector
-    Server->>DB: Fetch all chunks with item metadata
-    Server->>Server: Calculate Cosine Similarity & Rank
-
-    alt No chunks pass threshold (e.g. < 0.25)
-        Server-->>Frontend: 200 OK: "Insufficient context in knowledge base" (LLM call skipped)
-    else Chunks pass threshold
-        Server->>Server: Label top chunks [S1]..[Sn] & wrap in delimiters
-        Server->>Groq: Chat completion (System prompt + delimited untrusted context)
-        Groq-->>Server: JSON: {"answer": "...", "sources": ["S1"]}
-        Server->>Server: Validate citations (Drop unknown/invented labels)
-        Server-->>Frontend: 200 OK: { answer, sources: [{ title, url, snippet, similarity, label }] }
+    Embed-->>Server: 384-dim query vector
+    Server->>DB: Fetch chunks with item metadata
+    Server->>Server: Compute cosine similarity and rank
+    alt No chunks pass similarity threshold
+        Server-->>Frontend: 200 OK: Insufficient context (LLM call skipped)
+    else Relevant chunks found
+        Server->>Server: Format delimited context with source labels
+        Server->>Groq: Chat completion (System prompt + context)
+        Groq-->>Server: JSON: { answer, sources }
+        Server->>Server: Validate citations (Drop unknown labels)
+        Server-->>Frontend: 200 OK: Answer with source cards
     end
-    Frontend->>User: Displays answer in Markdown with interactive source cards
+    Frontend->>User: Displays answer in Markdown with source cards
 ```
 
 ---
